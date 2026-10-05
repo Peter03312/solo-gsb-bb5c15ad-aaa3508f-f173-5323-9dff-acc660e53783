@@ -84,3 +84,10 @@ export interface AdoptResponse {
   moved: Suggestion[];
   label: { currentVersion: number; body: string };
 }
+
+export interface BatchAdoptResponse {
+  adopted: Suggestion[];
+  conflicts: Suggestion[];
+  moved: Suggestion[];
+  label: { currentVersion: number; body: string };
+}

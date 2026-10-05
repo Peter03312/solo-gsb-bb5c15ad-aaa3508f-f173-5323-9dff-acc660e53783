@@ -206,6 +206,11 @@ button {
   border-bottom: 2px solid var(--adopted);
 }
 
+.hl-selected {
+  background: #e2ecfb;
+  border-bottom: 2px solid #3f6fb0;
+}
+
 .legend {
   font-weight: 400;
   font-size: 12.5px;
@@ -231,6 +236,125 @@ button {
 .swatch-adopted {
   background: var(--adopted-bg);
   border-bottom: 2px solid var(--adopted);
+}
+
+.swatch-selected {
+  background: #e2ecfb;
+  border-bottom: 2px solid #3f6fb0;
+}
+
+/* ---------- 成组采纳 ---------- */
+.batch-bar {
+  margin-bottom: 12px;
+}
+
+.batch-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-family: 'Noto Sans SC', sans-serif;
+  cursor: pointer;
+}
+
+.batch-check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--primary);
+  margin: 0;
+}
+
+.batch-hint {
+  display: block;
+  margin-top: 2px;
+}
+
+.suggestion-actions {
+  margin-top: 8px;
+}
+
+.suggestion-card:has(.batch-check input:checked) {
+  border-color: #8fb0d9;
+  box-shadow: 0 0 0 1px #c2d6ef;
+}
+
+.batch-modal {
+  width: 720px;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+
+.batch-preview {
+  padding: 14px 18px;
+  font-size: 15px;
+  margin: 8px 0 12px;
+}
+
+.batch-edit {
+  border-radius: 3px;
+  padding: 1px 1px;
+  background: #e2ecfb;
+  white-space: normal;
+}
+
+.batch-edit-conflict {
+  background: var(--conflict-bg);
+  outline: 1px solid #d98b83;
+}
+
+.batch-edit del,
+.batch-old {
+  background: var(--conflict-bg);
+  color: #a0453c;
+  border-bottom: 1px solid #d98b83;
+  text-decoration: line-through;
+  padding: 0 2px;
+}
+
+.batch-edit ins,
+.batch-new {
+  background: var(--adopted-bg);
+  color: #256240;
+  border-bottom: 1px solid #7fbb95;
+  text-decoration: none;
+  padding: 0 2px;
+}
+
+.batch-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.batch-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px dotted var(--line);
+  font-size: 13.5px;
+}
+
+.batch-list li:last-child {
+  border-bottom: none;
+}
+
+.batch-pair {
+  flex: 1 1 auto;
+  word-break: break-all;
+}
+
+.batch-arrow {
+  color: var(--muted);
+  margin: 0 2px;
+}
+
+.batch-item-conflict {
+  background: #fff8f7;
 }
 
 /* ---------- 徽章 ---------- */

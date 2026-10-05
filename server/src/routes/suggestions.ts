@@ -7,7 +7,7 @@ import {
 } from '../db.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { HttpError } from '../http-error.js';
-import { transformRange, validateSelection } from '../ranges.js';
+import { transformRange, validateSelection, rangesOverlap, applyEdits, transformRangeAcrossEdits, type Edit } from '../ranges.js';
 import { SUGGESTION_SELECT, serializeSuggestion } from '../serializers.js';
 
 export const suggestionsRouter = Router();
@@ -255,6 +255,242 @@ suggestionsRouter.post('/suggestions/:id/adopt', (req, res) => {
 
   res.json({
     adopted: serializeSuggestion(result.adopted),
+    conflicts: result.conflicts.map(serializeSuggestion),
+    moved: result.moved.map(serializeSuggestion),
+    label: { currentVersion: result.newVersion, body: result.newBody },
+  });
+});
+
+interface BatchAdoptResult {
+  adopted: SuggestionRow[];
+  conflicts: SuggestionRow[];
+  moved: SuggestionRow[];
+  newVersion: number;
+  newBody: string;
+}
+
+interface ResolvedEdit extends Edit {
+  id: number;
+}
+
+/**
+ * 馆员在同一事务中成组采纳多条建议。
+ * 任何一项校验不通过（版本、状态、选区、跨展签、区间重叠、编号重复）
+ * 都整组拒绝并回滚，不改正文、不改建议。
+ */
+const adoptBatchTransaction = db.transaction(
+  (labelId: number, ids: number[], expectedVersion: number): BatchAdoptResult => {
+    const label = db
+      .prepare('SELECT * FROM labels WHERE id = ?')
+      .get(labelId) as LabelRow | undefined;
+    if (!label) throw new HttpError(404, '展签不存在', 'not_found');
+
+    // 乐观并发：预览/确认所依据的版本必须是当前版本
+    if (expectedVersion !== label.current_version) {
+      throw new HttpError(
+        409,
+        `审批所依据的正文版本 v${expectedVersion} 已过期，当前为 v${label.current_version}，请刷新核对后重新预览与采纳`,
+        'version_stale',
+      );
+    }
+
+    const current = db
+      .prepare('SELECT body FROM label_versions WHERE label_id = ? AND version = ?')
+      .get(labelId, label.current_version) as LabelVersionRow;
+    const body = current.body;
+
+    // 逐条核对：存在性、是否同属本展签、状态、选区原文
+    const selected: { row: SuggestionRow; invalid?: string }[] = [];
+    for (const id of ids) {
+      const row = db
+        .prepare(`${SUGGESTION_SELECT} WHERE s.id = ?`)
+        .get(id) as SuggestionRow | undefined;
+      if (!row) {
+        throw new HttpError(404, `建议 #${id} 不存在`, 'not_found');
+      }
+      if (row.label_id !== labelId) {
+        throw new HttpError(
+          409,
+          `建议 #${id} 不属于展签「${label.title}」（属展签 #${row.label_id}），不能跨展签成组采纳`,
+          'cross_label',
+        );
+      }
+      if (row.status === 'adopted') {
+        throw new HttpError(
+          409,
+          `建议 #${row.id} 已在正文 v${row.adopted_in_version} 被采纳，不能重复采纳`,
+          'already_adopted',
+        );
+      }
+      if (row.status === 'conflict') {
+        throw new HttpError(
+          409,
+          `建议 #${row.id} 已转为冲突（${row.conflict_reason ?? '选区与已采纳编辑重叠'}），无法采纳`,
+          'in_conflict',
+        );
+      }
+      const invalid = validateSelection(body, row.sel_start, row.sel_end, row.selected_text);
+      if (invalid) {
+        throw new HttpError(422, `建议 #${row.id} 无法采纳：${invalid}`, 'invalid_selection');
+      }
+      selected.push({ row });
+    }
+
+    // 所选区间两两重叠（边界相接不算）→ 整组拒绝，并说明冲突项
+    const edits: ResolvedEdit[] = selected.map(({ row }) => ({
+      id: row.id,
+      start: row.sel_start,
+      end: row.sel_end,
+      replacement: row.replacement,
+    }));
+    edits.sort((a, b) => a.start - b.start || a.end - b.end);
+    for (let i = 0; i < edits.length; i++) {
+      for (let j = i + 1; j < edits.length; j++) {
+        if (rangesOverlap(edits[i], edits[j])) {
+          throw new HttpError(
+            422,
+            `所选建议 #${edits[i].id} 与 #${edits[j].id} 的选区在正文 v${label.current_version} 中重叠，成组采纳无法同时进行；请取消其中一条后重新预览`,
+            'selections_overlap',
+          );
+        }
+      }
+    }
+
+    const newVersion = label.current_version + 1;
+    const now = new Date().toISOString();
+    const { body: newBody, applied } = applyEdits(body, edits);
+
+    db.prepare(
+      `INSERT INTO label_versions (label_id, version, body, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(labelId, newVersion, newBody, now);
+
+    db.prepare(
+      `UPDATE labels SET current_version = ?, updated_at = ? WHERE id = ?`,
+    ).run(newVersion, now, labelId);
+
+    // 被采纳建议：选区指向最终正文中的替换区间（applied 与排序后的 edits 一一对应）
+    const finalRangeById = new Map<number, { start: number; end: number }>();
+    for (let i = 0; i < applied.length; i++) {
+      finalRangeById.set(edits[i].id, {
+        start: applied[i].finalStart,
+        end: applied[i].finalEnd,
+      });
+    }
+
+    const updateAdopted = db.prepare(
+      `UPDATE suggestions
+          SET status = 'adopted',
+              adopted_in_version = ?,
+              sel_start = ?,
+              sel_end = ?,
+              range_version = ?,
+              updated_at = ?
+        WHERE id = ?`,
+    );
+    for (const { row } of selected) {
+      const r = finalRangeById.get(row.id)!;
+      updateAdopted.run(newVersion, r.start, r.end, newVersion, now, row.id);
+    }
+
+    // 其余未选待审建议：按全部替换后的坐标位移；与任一替换区间重叠 → 转为冲突
+    const siblings = db
+      .prepare(
+        `${SUGGESTION_SELECT}
+          WHERE s.label_id = ? AND s.status = 'pending' AND s.id NOT IN (${ids.map(() => '?').join(',')})
+          ORDER BY s.id`,
+      )
+      .all(labelId, ...ids) as SuggestionRow[];
+
+    const conflictIds: number[] = [];
+    const movedIds: number[] = [];
+
+    const markConflict = db.prepare(
+      `UPDATE suggestions
+          SET status = 'conflict',
+              conflict_reason = ?,
+              updated_at = ?
+        WHERE id = ?`,
+    );
+    const movePending = db.prepare(
+      `UPDATE suggestions
+          SET sel_start = ?, sel_end = ?, range_version = ?, updated_at = ?
+        WHERE id = ?`,
+    );
+
+    for (const other of siblings) {
+      const otherRange = { start: other.sel_start, end: other.sel_end };
+      const next = transformRangeAcrossEdits(otherRange, edits);
+      if (next === null) {
+        // edits 已按原正文位置排序，取第一条重叠的已采纳建议用于留痕
+        const hit = edits.find((e) =>
+          rangesOverlap(otherRange, { start: e.start, end: e.end }),
+        );
+        markConflict.run(
+          `选区与建议 #${hit?.id ?? edits[0].id} 在正文 v${newVersion} 的成组采纳编辑重叠，已转为冲突`,
+          now,
+          other.id,
+        );
+        conflictIds.push(other.id);
+      } else {
+        movePending.run(next.start, next.end, newVersion, now, other.id);
+        movedIds.push(other.id);
+      }
+    }
+
+    // 响应数据一律取更新后的行
+    const getRow = db.prepare(`${SUGGESTION_SELECT} WHERE s.id = ?`);
+    const adopted = ids
+      .slice()
+      .sort((a, b) => a - b)
+      .map((id) => getRow.get(id) as SuggestionRow);
+    const conflicts = conflictIds.map((id) => getRow.get(id) as SuggestionRow);
+    const moved = movedIds.map((id) => getRow.get(id) as SuggestionRow);
+
+    return { adopted, conflicts, moved, newVersion, newBody };
+  },
+);
+
+/** 馆员成组采纳多条建议（一次替换生成一个新正文版本）。 */
+suggestionsRouter.post('/labels/:labelId/suggestions/adopt-batch', (req, res) => {
+  const user = requireRole(req, 'librarian');
+  const labelId = Number(req.params.labelId);
+  const { suggestionIds, expectedVersion } = req.body ?? {};
+
+  if (!Array.isArray(suggestionIds)) {
+    throw new HttpError(400, '缺少待采纳建议编号数组 suggestionIds', 'invalid_input');
+  }
+  if (suggestionIds.length === 0) {
+    throw new HttpError(400, '请至少勾选一条待审建议再成组采纳', 'invalid_input');
+  }
+  if (suggestionIds.length > 200) {
+    throw new HttpError(400, '单次成组采纳不能超过 200 条建议', 'invalid_input');
+  }
+  const ids: number[] = [];
+  for (const raw of suggestionIds) {
+    if (!Number.isInteger(raw)) {
+      throw new HttpError(400, '建议编号必须为整数', 'invalid_input');
+    }
+    ids.push(raw as number);
+  }
+  // 编号重复 → 整组拒绝
+  const dedup = new Set(ids);
+  if (dedup.size !== ids.length) {
+    const dup = ids.find((id) => ids.indexOf(id) !== ids.lastIndexOf(id));
+    throw new HttpError(
+      400,
+      `建议编号 #${dup} 在请求中重复出现，请去重后重新提交`,
+      'duplicate_ids',
+    );
+  }
+  if (!Number.isInteger(expectedVersion)) {
+    throw new HttpError(400, '缺少审批所依据的正文版本号 expectedVersion', 'invalid_input');
+  }
+
+  const result = adoptBatchTransaction(labelId, ids, expectedVersion);
+
+  res.json({
+    adopted: result.adopted.map(serializeSuggestion),
     conflicts: result.conflicts.map(serializeSuggestion),
     moved: result.moved.map(serializeSuggestion),
     label: { currentVersion: result.newVersion, body: result.newBody },
