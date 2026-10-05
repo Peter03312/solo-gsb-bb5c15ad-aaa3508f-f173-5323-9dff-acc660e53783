@@ -1,0 +1,21 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: label-check:latest
+    container_name: label-check
+    ports:
+      - "4000:4000"
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      DB_PATH: /data/app.db
+      PUBLIC_DIR: /app/web/dist
+      SESSION_DAYS: "30"
+    volumes:
+      - labelcheck-data:/data
+    restart: unless-stopped
+
+volumes:
+  labelcheck-data:
