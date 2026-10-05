@@ -84,3 +84,35 @@ export interface AdoptResponse {
   moved: Suggestion[];
   label: { currentVersion: number; body: string };
 }
+
+export interface BatchPreviewItem {
+  suggestion: Suggestion;
+  start: number;
+  end: number;
+  finalStart: number;
+  finalEnd: number;
+}
+
+export interface BatchPreviewMoved {
+  suggestion: Suggestion;
+  start: number;
+  end: number;
+}
+
+export interface BatchPreviewResponse {
+  labelId: number;
+  version: number;
+  newVersion: number;
+  body: string;
+  previewBody: string;
+  items: BatchPreviewItem[];
+  moved: BatchPreviewMoved[];
+  conflicts: { suggestion: Suggestion }[];
+}
+
+export interface BatchAdoptResponse {
+  adopted: Suggestion[];
+  conflicts: Suggestion[];
+  moved: Suggestion[];
+  label: { currentVersion: number; body: string };
+}

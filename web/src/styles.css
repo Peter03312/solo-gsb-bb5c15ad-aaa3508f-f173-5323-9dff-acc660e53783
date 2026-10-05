@@ -506,6 +506,75 @@ select:focus {
   gap: 4px;
 }
 
+/* ---------- 成组采纳 ---------- */
+.hl-selected {
+  background: #dfe9f5;
+  border-bottom: 2px solid #3d6ea5;
+}
+
+.batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: #fbf8f1;
+}
+
+.batch-checkall,
+.batch-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-family: 'Noto Sans SC', sans-serif;
+  white-space: nowrap;
+}
+
+.batch-summary {
+  flex: 1 1 auto;
+  font-size: 14px;
+}
+
+.batch-pick {
+  color: #3d6ea5;
+}
+
+.batch-modal {
+  width: 640px;
+  max-height: 86vh;
+  overflow-y: auto;
+}
+
+.center-narrow {
+  text-align: center;
+  padding: 24px 0;
+}
+
+.batch-preview {
+  font-size: 15.5px;
+  padding: 16px 18px;
+}
+
+.batch-itemlist {
+  margin: 12px 0;
+}
+
+.batch-item {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 4px;
+  border-bottom: 1px dotted var(--line);
+  font-size: 13.5px;
+}
+
+.tag-inline {
+  display: inline-block;
+  margin-right: 4px;
+}
+
 /* ---------- 发布 ---------- */
 .publish-bar {
   display: flex;

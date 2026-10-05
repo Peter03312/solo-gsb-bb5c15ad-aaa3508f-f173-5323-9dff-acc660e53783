@@ -1,13 +1,14 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api, ApiError } from '../api';
 import {
   useLabelData,
   useVersionPolling,
   formatTime,
 } from '../hooks';
-import type { AdoptResponse, Suggestion } from '../types';
+import type { AdoptResponse, BatchAdoptResponse, Suggestion } from '../types';
 import { ErrorBox, LabelHeader, SuggestionList } from './CheckerWorkspace';
 import PublishDialog from './PublishDialog';
+import BatchAdoptDialog from './BatchAdoptDialog';
 
 interface Segment {
   start: number;
@@ -68,13 +69,71 @@ export default function ReviewerWorkspace() {
   const [notice, setNotice] = useState<string | null>(null);
   const [showPublish, setShowPublish] = useState(false);
 
+  // 成组采纳：勾选的待审建议编号；弹窗打开期间禁用单条操作
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [showBatch, setShowBatch] = useState(false);
+  const batchBusy = showBatch;
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+
   const segments = useMemo(
     () => (label ? buildSegments(label.body, suggestions) : []),
     [label, suggestions],
   );
 
-  const pendingCount = suggestions.filter((s) => s.status === 'pending').length;
+  const pending = useMemo(
+    () => suggestions.filter((s) => s.status === 'pending'),
+    [suggestions],
+  );
+  const pendingCount = pending.length;
   const conflictCount = suggestions.filter((s) => s.status === 'conflict').length;
+
+  // 数据刷新（轮询/手动）后，剔除已不是待审的勾选，避免提交失效编号
+  useEffect(() => {
+    const pendingIds = new Set(pending.map((s) => s.id));
+    setSelectedIds((prev) => prev.filter((id) => pendingIds.has(id)));
+  }, [pending]);
+
+  function toggleSelected(id: number, checked: boolean) {
+    setActionError(null);
+    setSelectedIds((prev) =>
+      checked ? (prev.includes(id) ? prev : [...prev, id]) : prev.filter((x) => x !== id),
+    );
+  }
+
+  function applyBatchResult(res: BatchAdoptResponse) {
+    const byId = new Map<number, Suggestion>();
+    for (const s of [...res.adopted, ...res.conflicts, ...res.moved]) byId.set(s.id, s);
+    // 用返回结果就地更新，避免并发窗口期内整页覆盖
+    setLabel((prev) =>
+      prev
+        ? { ...prev, body: res.label.body, currentVersion: res.label.currentVersion }
+        : prev,
+    );
+    setSuggestions((prev) => prev.map((item) => byId.get(item.id) ?? item));
+    setSelectedIds([]);
+    setShowBatch(false);
+    const parts = [
+      `已成组采纳 ${res.adopted.length} 条，正文更新到 v${res.label.currentVersion}`,
+    ];
+    if (res.conflicts.length > 0) {
+      parts.push(
+        `#${res.conflicts
+          .map((c) => c.id)
+          .sort((a, b) => a - b)
+          .join('、#')} 因与替换区间重叠转为冲突`,
+      );
+    }
+    if (res.moved.length > 0) {
+      parts.push(
+        `#${res.moved
+          .map((m) => m.id)
+          .sort((a, b) => a - b)
+          .join('、#')} 的选区已随文字位移`,
+      );
+    }
+    setNotice(parts.join('；'));
+    setActionError(null);
+  }
 
   async function adopt(s: Suggestion) {
     if (!label) return;
@@ -103,6 +162,7 @@ export default function ReviewerWorkspace() {
           return item;
         }),
       );
+      setSelectedIds((prev) => prev.filter((id) => id !== s.id));
       const parts = [`已采纳 #${res.adopted.id}，正文更新到 v${res.label.currentVersion}`];
       if (res.conflicts.length > 0) {
         parts.push(
@@ -157,7 +217,11 @@ export default function ReviewerWorkspace() {
               ) : (
                 <mark
                   key={i}
-                  className={`hl hl-${seg.status}`}
+                  className={
+                    seg.status === 'pending' && seg.ids.some((id) => selectedSet.has(id))
+                      ? 'hl hl-selected'
+                      : `hl hl-${seg.status}`
+                  }
                   title={`建议 #${seg.ids.join('、#')}`}
                 >
                   {label.body.slice(seg.start, seg.end)}
@@ -169,6 +233,51 @@ export default function ReviewerWorkspace() {
 
         {actionError && <div className="notice notice-error">{actionError}</div>}
         {notice && <div className="notice notice-ok">{notice}</div>}
+
+        <div className="batch-bar card">
+          <label className="batch-checkall">
+            <input
+              type="checkbox"
+              checked={pendingCount > 0 && selectedIds.length === pendingCount}
+              disabled={batchBusy || pendingCount === 0}
+              onChange={(e) =>
+                setSelectedIds(e.target.checked ? pending.map((s) => s.id) : [])
+              }
+            />
+            全选待审
+          </label>
+          <div className="batch-summary">
+            已勾选 <strong>{selectedIds.length}</strong> / {pendingCount} 条待审建议
+            {selectedIds.length > 0 && (
+              <span className="muted small">
+                （#
+                {[...selectedIds].sort((a, b) => a - b).join('、#')}）
+              </span>
+            )}
+          </div>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={batchBusy || selectedIds.length === 0}
+              onClick={() => {
+                setActionError(null);
+                setNotice(null);
+                setShowBatch(true);
+              }}
+            >
+              预览并成组采纳
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={batchBusy || selectedIds.length === 0}
+              onClick={() => setSelectedIds([])}
+            >
+              清空勾选
+            </button>
+          </div>
+        </div>
 
         <div className="publish-bar card">
           <div>
@@ -194,7 +303,7 @@ export default function ReviewerWorkspace() {
 
         <p className="muted small publish-hint">
           正文最近更新：{formatTime(label.updatedAt)}。发布会固化 v{label.currentVersion}{' '}
-          正文与全部采纳记录；之后继续编辑不会改写旧发布。
+          正文与全部采纳记录（含成组采纳结果）；之后继续编辑不会改写旧发布。
         </p>
       </section>
 
@@ -206,13 +315,22 @@ export default function ReviewerWorkspace() {
           actions={(s) =>
             s.status === 'pending' ? (
               <div className="row-actions">
+                <label className="batch-pick">
+                  <input
+                    type="checkbox"
+                    checked={selectedSet.has(s.id)}
+                    disabled={busyId !== null || batchBusy}
+                    onChange={(e) => toggleSelected(s.id, e.target.checked)}
+                  />
+                  成组采纳
+                </label>
                 <button
                   type="button"
                   className="btn btn-primary btn-sm"
-                  disabled={busyId !== null}
+                  disabled={busyId !== null || batchBusy}
                   onClick={() => void adopt(s)}
                 >
-                  {busyId === s.id ? '处理中…' : `采纳 #${s.id}`}
+                  {busyId === s.id ? '处理中…' : `单条采纳 #${s.id}`}
                 </button>
                 <span className="muted small">
                   将基于 v{label.currentVersion} 审批（待审选区指向 v{s.rangeVersion}）
@@ -222,6 +340,16 @@ export default function ReviewerWorkspace() {
           }
         />
       </aside>
+
+      {showBatch && (
+        <BatchAdoptDialog
+          labelId={labelId}
+          expectedVersion={label.currentVersion}
+          selectedIds={[...selectedIds].sort((a, b) => a - b)}
+          onClose={() => setShowBatch(false)}
+          onAdopted={applyBatchResult}
+        />
+      )}
 
       {showPublish && (
         <PublishDialog

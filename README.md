@@ -51,8 +51,8 @@ docker compose down -v          # 停止并删除数据库卷（恢复初始演�
 
 演示展签《溪山行旅图》的 v1 正文中预置了 3 条待审建议，其中：
 
-- `#1`「链→练」与 `#2`「飞瀑如链，山脚→飞瀑如练。山脚」**选区重叠**：先采纳任一条，另一条会**自动转为冲突**并停止采纳；
-- `#3`「雾蔼→雾霭」与二者**不重叠**：前一条采纳后，它的选区会**随文字位移**，仍然精确指向「雾蔼」。
+- `#1`「链→练」与 `#2`「飞瀑如链，山脚→飞瀑如练。山脚」**选区重叠**：单条采纳任一条，另一条会**自动转为冲突**并停止采纳；若把两条一起勾选做**成组采纳**，服务端会**整组拒绝**并指出「#1 与 #2」冲突，不改正文；
+- `#3`「雾蔼→雾霭」与二者**不重叠**：可与 `#1` 一起勾选成组采纳；前一条采纳后，它的选区会**随文字位移**，仍然精确指向「雾蔼」。
 
 ---
 
@@ -67,7 +67,19 @@ docker compose down -v          # 停止并删除数据库卷（恢复初始演�
 
 ### 2. 采纳时的选区位移与冲突（单次数据库事务）
 
-采纳建议 `#A`（编辑区间 `[start,end)`，旧长度 → 新长度）时，对每条其他**待审**建议：
+馆员可**单条采纳**，也可在建议列表中**勾选多条待审建议一次成组采纳**：
+
+- 点击「预览并成组采纳」后，先调预览接口，按**原正文位置**展示所有替换拼接出的新正文（替换文本高亮）、每条建议在新正文中的最终区间，以及未选待审建议将如何位移/转冲突；确认后才提交。
+- 提交时携带**所选建议编号与预览时所见版本号**，服务端在**单个事务**内重新核对权限、版本、建议状态与选区原文；任一不通过则**整组拒绝、零改动**，不会只采纳其中一部分：
+  - 编号重复、建议不属于当前展签（跨展签）→ 409（`duplicate_ids` / `cross_label`）；
+  - 建议已处理（已采纳 / 冲突）→ 409（`already_adopted` / `in_conflict`）；
+  - 选区失效（越界、反向、原文与当前正文不一致）→ 422（`invalid_selection`）；
+  - 所见版本过期（预览后正文已被推进）→ 409（`version_stale`）；
+  - **所选区间彼此重叠**（边界相接不算）→ 409（`selections_overlap`），错误信息列出具体冲突编号对，正文与建议均不改动。
+- 成功时：全部替换**一次形成一个新正文版本**；各条采纳记录指向**最终正文**中的替换区间（同一事务内按原位置依次应用，支持边界相接）。
+- 未选的待审建议按**全部替换完成后**的坐标位移（前方替换长度差之和）；若与任一替换区间重叠则转为「冲突」并记录原因。
+
+单条采纳时（旧规则保持不变），采纳建议 `#A`（编辑区间 `[start,end)`，旧长度 → 新长度）对每条其他**待审**建议：
 
 | 待审建议选区与编辑区间的关系 | 处理 |
 | --- | --- |
@@ -90,7 +102,7 @@ docker compose down -v          # 停止并删除数据库卷（恢复初始演�
 
 ### 4. 发布固化与版本对比
 
-- 馆员发布时，在 `publications` 中固化当前正文全文快照，在 `publication_adoptions` 中固化当时全部采纳记录（坐标、原文、替换、依据、提交人、采纳版本）；
+- 馆员发布时，在 `publications` 中固化当前正文全文快照，在 `publication_adoptions` 中固化当时全部采纳记录（坐标、原文、替换、依据、提交人、采纳版本；成组采纳记录的坐标取**最终正文**中的替换区间）；
 - 旧发布**只读不可改**：后续审批只会产生新正文版本与新发布，旧快照不受影响；
 - `/publications` 页面可任选**两次发布**比较正文差异：中文按单字、拉丁按单词做 LCS 差异，绿色为新增、红色为删除，差异完全基于不可变快照计算。
 
@@ -151,15 +163,15 @@ npm start                   # http://localhost:4000
 │   └── src/
 │       ├── index.ts         # 入口：路由装配、静态托管、错误处理、启动即初始化数据库
 │       ├── db.ts / db/      # 连接、表结构 schema、幂等播种
-│       ├── ranges.ts        # 选区位移 / 重叠判定 / 选区校验（纯函数）
+│       ├── ranges.ts        # 选区位移 / 重叠判定 / 选区校验 / 成组替换（纯函数）
 │       ├── diff.ts          # CJK 感知的 LCS 正文差异
 │       ├── auth.ts          # 会话、登录校验、角色鉴权
-│       └── routes/          # auth / labels / suggestions（采纳事务）/ publications
+│       └── routes/          # auth / labels / suggestions（单条 + 成组采纳事务）/ publications
 └── web/                     # 前端（React 18 + Vite + TypeScript）
     └── src/
         ├── App.tsx          # 路由与角色守卫
         ├── auth-context.tsx # 登录态
-        └── pages/           # 登录、校核工作台、馆员工作台、发布与差异
+        └── pages/           # 登录、校核工作台、馆员工作台、成组采纳预览、发布与差异
 ```
 
 ## 七、API 摘要
@@ -173,7 +185,85 @@ npm start                   # http://localhost:4000
 | GET | `/api/labels` · `/api/labels/:id` | 登录 | 展签与当前正文版本 |
 | GET | `/api/labels/:id/suggestions` | 登录 | 建议列表 |
 | POST | `/api/labels/:id/suggestions` | 校核人 | 提交建议（带 `expectedVersion`） |
-| POST | `/api/suggestions/:id/adopt` | 馆员 | 采纳（事务：改正文、位移/冲突其余建议） |
-| POST | `/api/labels/:id/publish` | 馆员 | 发布固化（带 `expectedVersion`） |
+| POST | `/api/suggestions/:id/adopt` | 馆员 | 单条采纳（事务：改正文、位移/冲突其余建议；字段与返回保持兼容） |
+| POST | `/api/labels/:id/suggestions/adopt-preview` | 馆员 | 成组采纳预览（只读）：按原正文位置排列的替换预览、最终区间、未选建议位移/冲突 |
+| POST | `/api/labels/:id/suggestions/adopt` | 馆员 | 成组采纳：提交 `suggestionIds[]` + `expectedVersion`，全部替换一次形成新版本 |
+| POST | `/api/labels/:id/publish` | 馆员 | 发布固化（带 `expectedVersion`，快照含本次成组采纳结果） |
 | GET | `/api/labels/:id/publications` · `/api/publications/:id` | 登录 | 发布历史 / 快照详情 |
 | GET | `/api/labels/:id/diff?from=v&to=v` | 登录 | 两次发布正文差异 |
+
+---
+
+## 八、成组采纳调用示例
+
+以下示例使用演示展签（id=1）与预置建议 `#1 链→练`、`#2 飞瀑如链，山脚→飞瀑如练。山脚`（与 `#1` 重叠）、`#3 雾蔼→雾蔼`（不重叠）。
+
+### 1. 预览（确认前必做，只读，不产生新版本）
+
+```bash
+curl -b cookies.txt -X POST http://localhost:4000/api/labels/1/suggestions/adopt-preview \
+  -H 'Content-Type: application/json' \
+  -d '{"suggestionIds":[3,1],"expectedVersion":1}'
+```
+
+返回（节选）：`items` 已按原正文位置排序，含每条替换的原始区间与在新正文中的最终区间；`conflicts` 预告未选且将转冲突的建议（`#2`）：
+
+```json
+{
+  "labelId": 1,
+  "version": 1,
+  "newVersion": 2,
+  "body": "…飞瀑如链，山脚下雾蔼蒸腾…",
+  "previewBody": "…飞瀑如练，山脚下雾霭蒸腾…",
+  "items": [
+    { "suggestion": { "id": 1, "selectedText": "链", "replacement": "练" },
+      "start": 57, "end": 58, "finalStart": 57, "finalEnd": 58 },
+    { "suggestion": { "id": 3, "selectedText": "雾蔼", "replacement": "雾霭" },
+      "start": 62, "end": 64, "finalStart": 62, "finalEnd": 64 }
+  ],
+  "moved": [],
+  "conflicts": [ { "suggestion": { "id": 2 } } ]
+}
+```
+
+### 2. 提交成组采纳（所见版本与预览一致）
+
+```bash
+curl -b cookies.txt -X POST http://localhost:4000/api/labels/1/suggestions/adopt \
+  -H 'Content-Type: application/json' \
+  -d '{"suggestionIds":[3,1],"expectedVersion":1}'
+```
+
+成功返回 `200`：
+
+```json
+{
+  "adopted": [ { "id": 1, "status": "adopted", "adoptedInVersion": 2, "start": 57, "end": 58 },
+               { "id": 3, "status": "adopted", "adoptedInVersion": 2, "start": 62, "end": 64 } ],
+  "conflicts": [ { "id": 2, "status": "conflict",
+                   "conflictReason": "选区与本次成组采纳（正文 v2）的替换区间重叠…" } ],
+  "moved": [],
+  "label": { "currentVersion": 2, "body": "…飞瀑如练，山脚下雾霭蒸腾…" }
+}
+```
+
+整组拒绝示例（所选区间重叠，HTTP 409，正文与建议均不变）：
+
+```bash
+curl -b cookies.txt -X POST http://localhost:4000/api/labels/1/suggestions/adopt-preview \
+  -H 'Content-Type: application/json' \
+  -d '{"suggestionIds":[1,2],"expectedVersion":1}'
+# {"error":"所选建议的选区在当前正文中彼此重叠（#1 与 #2），整组未采纳…","code":"selections_overlap"}
+```
+
+其他整组拒绝原因：`duplicate_ids`（编号重复）、`cross_label`（跨展签）、`already_adopted` / `in_conflict`（建议已处理）、`invalid_selection`（选区失效，422）、`version_stale`（预览后版本已变化，409）。
+
+### 3. 发布快照记录本次采纳结果
+
+```bash
+curl -b cookies.txt -X POST http://localhost:4000/api/labels/1/publish \
+  -H 'Content-Type: application/json' \
+  -d '{"expectedVersion":2,"note":"成组采纳 #1、#3"}'
+```
+
+`GET /api/publications/:id` 返回的 `adoptions` 即包含 `#1`、`#3` 在 v2 最终正文中的坐标与全部留痕字段。
